@@ -563,7 +563,8 @@ body {
 
 .stock-muted { color: var(--stock-muted); }
 .stock-error { margin: 12px 18px 0; }
-.stock-loading { opacity: .68; pointer-events: none; }
+.stock-loading { pointer-events: none; }
+.stock-loading .stock-entry-view { opacity: .68; }
 
 @media (max-width: 1250px) {
   .stock-topbar { grid-template-columns: 1fr 380px auto; }
@@ -608,8 +609,58 @@ body {
 }
 
 .stock-entry-app {
+  position: relative;
   display: grid;
   grid-template-rows: minmax(0, 1fr);
+}
+
+.stock-db-loading {
+  position: absolute;
+  z-index: 30;
+  top: 18px;
+  left: 50%;
+  width: 380px;
+  max-width: calc(100% - 48px);
+  transform: translateX(-50%);
+  padding: 9px 11px 10px;
+  border: 1px solid #44474d;
+  border-radius: 7px;
+  background: #25262a;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .28);
+}
+
+.stock-db-loading[hidden] {
+  display: none;
+}
+
+.stock-db-loading-label {
+  display: block;
+  margin-bottom: 7px;
+  color: #c8c9ce;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.stock-db-loading-track {
+  display: block;
+  height: 3px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #34363b;
+}
+
+.stock-db-loading-bar {
+  display: block;
+  width: 42%;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--stock-accent);
+  animation: stock-db-loading 1.05s ease-in-out infinite;
+}
+
+@keyframes stock-db-loading {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(280%); }
 }
 
 .stock-entry-view {

@@ -42,6 +42,10 @@
     return [
       '<div class="stock-app stock-entry-app" id="stock-drop-zone">',
       '<div id="app-error"></div>',
+      '<div class="stock-db-loading" id="database-loading" role="status" aria-live="polite" hidden>',
+      '<span class="stock-db-loading-label">Loading database...</span>',
+      '<span class="stock-db-loading-track" aria-hidden="true"><span class="stock-db-loading-bar"></span></span>',
+      '</div>',
       '<section id="view-root" class="stock-view stock-entry-view"></section>',
       '<input id="database-file" type="file" accept=".db,.sqlite,.sqlite3,application/vnd.sqlite3" hidden>',
       '<input id="backtest-file" type="file" accept=".json,application/json" hidden>',
@@ -87,8 +91,12 @@
 
     const dropZone = root.querySelector("#stock-drop-zone");
     state.fileBinding = StockDb.bindFilePicker(fileInput, dropZone, {
+      onOpenStart: function () {
+        clearError();
+        setDatabaseLoading(true);
+      },
       onOpened: onDatabaseOpened,
-      onError: showError,
+      onError: onDatabaseOpenError,
     });
     ["dragenter", "dragover"].forEach(function (eventName) {
       dropZone.addEventListener(eventName, function () {
@@ -125,6 +133,22 @@
 
   function clearError() {
     root.querySelector("#app-error").innerHTML = "";
+  }
+
+  function setDatabaseLoading(loading, nextState) {
+    if (loading) {
+      document.body.dataset.appState = "LOADING";
+    } else if (nextState) {
+      document.body.dataset.appState = nextState;
+    }
+    root.classList.toggle("stock-loading", loading);
+    const indicator = root.querySelector("#database-loading");
+    if (indicator) indicator.hidden = !loading;
+  }
+
+  function onDatabaseOpenError(error) {
+    setDatabaseLoading(false, "ERROR");
+    showError(error);
   }
 
   function updateStatusBar() {
@@ -988,23 +1012,19 @@
     renderWorkspaceShell();
     updateStatusBar();
     renderView();
-    document.body.dataset.appState = "READY";
+    setDatabaseLoading(false, "READY");
     return session;
   }
 
   async function openDatabaseFile(file) {
-    document.body.dataset.appState = "LOADING";
-    root.classList.add("stock-loading");
+    clearError();
+    setDatabaseLoading(true);
     try {
       const session = await StockDb.openFile(file);
-      onDatabaseOpened(session);
-      return session;
+      return onDatabaseOpened(session);
     } catch (error) {
-      document.body.dataset.appState = "ERROR";
-      showError(error);
+      onDatabaseOpenError(error);
       throw error;
-    } finally {
-      root.classList.remove("stock-loading");
     }
   }
 
@@ -1017,10 +1037,13 @@
       onDatabaseOpened(event.detail);
     }, {once: true});
     document.addEventListener("stock-database-error", function (event) {
-      document.body.dataset.appState = "ERROR";
-      showError(event.detail);
+      onDatabaseOpenError(event.detail);
     }, {once: true});
-    document.body.dataset.appState = "WAITING_FOR_DATABASE";
+    if (isHostedLaunch()) {
+      setDatabaseLoading(true);
+    } else {
+      setDatabaseLoading(false, "WAITING_FOR_DATABASE");
+    }
   }
 
   window.StockApp = {

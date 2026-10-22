@@ -310,6 +310,9 @@
 
     async function handleFile(file) {
       try {
+        if (typeof options.onOpenStart === "function") {
+          options.onOpenStart(file);
+        }
         const session = await openFile(file);
         if (typeof options.onOpened === "function") {
           options.onOpened(session);
