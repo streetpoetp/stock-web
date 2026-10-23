@@ -43,8 +43,12 @@
       '<div class="stock-app stock-entry-app" id="stock-drop-zone">',
       '<div id="app-error"></div>',
       '<div class="stock-db-loading" id="database-loading" role="status" aria-live="polite" hidden>',
-      '<span class="stock-db-loading-label">Loading database...</span>',
+      '<div class="stock-db-loading-head">',
+      '<span class="stock-db-loading-label" id="database-loading-label">Loading database...</span>',
+      '<span class="stock-db-loading-percent" id="database-loading-percent"></span>',
+      '</div>',
       '<span class="stock-db-loading-track" aria-hidden="true"><span class="stock-db-loading-bar"></span></span>',
+      '<span class="stock-db-loading-bytes" id="database-loading-bytes"></span>',
       '</div>',
       '<section id="view-root" class="stock-view stock-entry-view"></section>',
       '<input id="database-file" type="file" accept=".db,.sqlite,.sqlite3,application/vnd.sqlite3" hidden>',
@@ -95,6 +99,7 @@
         clearError();
         setDatabaseLoading(true);
       },
+      onProgress: onDatabaseProgress,
       onOpened: onDatabaseOpened,
       onError: onDatabaseOpenError,
     });
@@ -135,6 +140,19 @@
     root.querySelector("#app-error").innerHTML = "";
   }
 
+  function resetDatabaseProgress(indicator) {
+    if (!indicator) return;
+    indicator.dataset.progressMode = "indeterminate";
+    const label = indicator.querySelector("#database-loading-label");
+    const percent = indicator.querySelector("#database-loading-percent");
+    const bytes = indicator.querySelector("#database-loading-bytes");
+    const bar = indicator.querySelector(".stock-db-loading-bar");
+    if (label) label.textContent = "Loading database...";
+    if (percent) percent.textContent = "";
+    if (bytes) bytes.textContent = "";
+    if (bar) bar.style.width = "";
+  }
+
   function setDatabaseLoading(loading, nextState) {
     if (loading) {
       document.body.dataset.appState = "LOADING";
@@ -143,7 +161,64 @@
     }
     root.classList.toggle("stock-loading", loading);
     const indicator = root.querySelector("#database-loading");
-    if (indicator) indicator.hidden = !loading;
+    if (!indicator) return;
+    const becomingVisible = loading && indicator.hidden;
+    indicator.hidden = !loading;
+    if (becomingVisible) resetDatabaseProgress(indicator);
+  }
+
+  function databaseProgressLabel(stage) {
+    if (stage === "reading") return "Reading database";
+    if (stage === "downloading") return "Downloading database";
+    if (stage === "opening") return "Opening database";
+    if (stage === "validating") return "Validating database";
+    return "Loading database...";
+  }
+
+  function onDatabaseProgress(progress) {
+    setDatabaseLoading(true);
+    const indicator = root.querySelector("#database-loading");
+    if (!indicator) return;
+    const item = progress || {};
+    const stage = String(item.stage || "");
+    const loadedBytes = Number(item.loadedBytes);
+    const totalBytes = Number(item.totalBytes);
+    const transferStage = stage === "reading" || stage === "downloading";
+    const determinate =
+      transferStage &&
+      Number.isFinite(loadedBytes) &&
+      Number.isFinite(totalBytes) &&
+      totalBytes > 0;
+    const label = indicator.querySelector("#database-loading-label");
+    const percent = indicator.querySelector("#database-loading-percent");
+    const bytes = indicator.querySelector("#database-loading-bytes");
+    const bar = indicator.querySelector(".stock-db-loading-bar");
+    indicator.dataset.progressMode = determinate ? "determinate" : "indeterminate";
+    if (label) label.textContent = databaseProgressLabel(stage);
+    if (determinate) {
+      const value = Math.max(
+        0,
+        Math.min(100, Math.floor((loadedBytes * 100) / totalBytes)),
+      );
+      if (percent) percent.textContent = String(value) + "%";
+      if (bytes) {
+        bytes.textContent =
+          String(Math.max(0, Math.floor(loadedBytes))) +
+          " / " +
+          String(Math.floor(totalBytes)) +
+          " bytes";
+      }
+      if (bar) bar.style.width = String(value) + "%";
+    } else {
+      if (percent) percent.textContent = "";
+      if (bytes) {
+        bytes.textContent =
+          transferStage && Number.isFinite(loadedBytes) && loadedBytes > 0
+            ? String(Math.floor(loadedBytes)) + " bytes"
+            : "";
+      }
+      if (bar) bar.style.width = "";
+    }
   }
 
   function onDatabaseOpenError(error) {
@@ -1020,7 +1095,7 @@
     clearError();
     setDatabaseLoading(true);
     try {
-      const session = await StockDb.openFile(file);
+      const session = await StockDb.openFile(file, onDatabaseProgress);
       return onDatabaseOpened(session);
     } catch (error) {
       onDatabaseOpenError(error);
@@ -1033,6 +1108,9 @@
     root = document.getElementById("app");
     if (!root) return;
     renderShell();
+    document.addEventListener("stock-database-progress", function (event) {
+      onDatabaseProgress(event.detail);
+    });
     document.addEventListener("stock-database-ready", function (event) {
       onDatabaseOpened(event.detail);
     }, {once: true});

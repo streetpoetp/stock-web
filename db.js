@@ -235,7 +235,82 @@
     return api;
   }
 
-  async function openBytes(bytes, fileName) {
+  function emitProgress(callback, stage, loadedBytes, totalBytes) {
+    if (typeof callback !== "function") return;
+    callback({
+      stage,
+      loadedBytes: Number.isFinite(loadedBytes) ? loadedBytes : null,
+      totalBytes: Number.isFinite(totalBytes) && totalBytes > 0 ? totalBytes : null,
+    });
+  }
+
+  function mergeChunks(chunks, totalBytes) {
+    const bytes = new Uint8Array(totalBytes);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return bytes;
+  }
+
+  async function readStreamBytes(stream, stage, totalBytes, onProgress) {
+    const reader = stream.getReader();
+    const chunks = [];
+    let loadedBytes = 0;
+    emitProgress(onProgress, stage, loadedBytes, totalBytes);
+    while (true) {
+      const result = await reader.read();
+      if (result.done) break;
+      const chunk = result.value instanceof Uint8Array
+        ? result.value
+        : new Uint8Array(result.value);
+      chunks.push(chunk);
+      loadedBytes += chunk.byteLength;
+      emitProgress(onProgress, stage, loadedBytes, totalBytes);
+    }
+    return mergeChunks(chunks, loadedBytes);
+  }
+
+  async function readLocalFile(file, onProgress) {
+    const totalBytes = Number(file.size);
+    if (typeof file.stream === "function") {
+      const stream = file.stream();
+      if (stream && typeof stream.getReader === "function") {
+        return readStreamBytes(stream, "reading", totalBytes, onProgress);
+      }
+    }
+    emitProgress(onProgress, "reading", 0, totalBytes);
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    emitProgress(onProgress, "reading", bytes.byteLength, totalBytes);
+    return bytes;
+  }
+
+  function hostedTotalBytes(response) {
+    const encoding = String(response.headers.get("content-encoding") || "")
+      .trim()
+      .toLowerCase();
+    if (encoding && encoding !== "identity") return null;
+    const value = Number(response.headers.get("content-length"));
+    return Number.isFinite(value) && value > 0 ? value : null;
+  }
+
+  async function readHostedBytes(response, onProgress) {
+    const totalBytes = hostedTotalBytes(response);
+    if (response.body && typeof response.body.getReader === "function") {
+      return readStreamBytes(response.body, "downloading", totalBytes, onProgress);
+    }
+    emitProgress(onProgress, "downloading", 0, totalBytes);
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    emitProgress(onProgress, "downloading", bytes.byteLength, totalBytes);
+    return bytes;
+  }
+
+  function nextTurn() {
+    return new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  async function openBytes(bytes, fileName, onProgress) {
     if (!(bytes instanceof Uint8Array)) {
       bytes = new Uint8Array(bytes);
     }
@@ -249,10 +324,14 @@
     ) {
       throw new Error("Selected file is not a SQLite database");
     }
+    emitProgress(onProgress, "opening", null, null);
+    await nextTurn();
     const SQL = await getSql();
     let db = null;
     try {
       db = new SQL.Database(bytes);
+      emitProgress(onProgress, "validating", null, null);
+      await nextTurn();
       const schemaVersion = validateSchema(db);
       if (current) {
         current.close();
@@ -268,15 +347,15 @@
     }
   }
 
-  async function openFile(file) {
+  async function openFile(file, onProgress) {
     if (!file || typeof file.arrayBuffer !== "function") {
       throw new Error("Select a SQLite database file");
     }
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    return openBytes(bytes, file.name || "stock.db");
+    const bytes = await readLocalFile(file, onProgress);
+    return openBytes(bytes, file.name || "stock.db", onProgress);
   }
 
-  async function openHostedSnapshot() {
+  async function openHostedSnapshot(onProgress) {
     const snapshotUrl = new URL("data/latest.db", window.location.href);
     if (snapshotUrl.origin !== window.location.origin) {
       throw new Error("Hosted scanner database must be same-origin");
@@ -287,14 +366,18 @@
         "Hosted scanner database is unavailable (HTTP " + response.status + ")",
       );
     }
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    return openBytes(bytes, "latest.db");
+    const bytes = await readHostedBytes(response, onProgress);
+    return openBytes(bytes, "latest.db", onProgress);
   }
 
   async function startHostedSnapshot() {
     if (window.location.protocol === "file:") return;
     try {
-      const session = await openHostedSnapshot();
+      const session = await openHostedSnapshot(function (progress) {
+        document.dispatchEvent(
+          new CustomEvent("stock-database-progress", {detail: progress}),
+        );
+      });
       document.dispatchEvent(new CustomEvent("stock-database-ready", {detail: session}));
     } catch (error) {
       document.dispatchEvent(new CustomEvent("stock-database-error", {detail: error}));
@@ -313,7 +396,7 @@
         if (typeof options.onOpenStart === "function") {
           options.onOpenStart(file);
         }
-        const session = await openFile(file);
+        const session = await openFile(file, options.onProgress);
         if (typeof options.onOpened === "function") {
           options.onOpened(session);
         }

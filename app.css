@@ -633,12 +633,25 @@ body {
   display: none;
 }
 
+.stock-db-loading-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 7px;
+}
+
 .stock-db-loading-label {
   display: block;
-  margin-bottom: 7px;
   color: #c8c9ce;
   font-size: 12px;
   font-weight: 600;
+}
+
+.stock-db-loading-percent {
+  color: #c8c9ce;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
 }
 
 .stock-db-loading-track {
@@ -656,6 +669,20 @@ body {
   border-radius: inherit;
   background: var(--stock-accent);
   animation: stock-db-loading 1.05s ease-in-out infinite;
+}
+
+.stock-db-loading[data-progress-mode="determinate"] .stock-db-loading-bar {
+  transform: none;
+  animation: none;
+}
+
+.stock-db-loading-bytes {
+  display: block;
+  min-height: 14px;
+  margin-top: 6px;
+  color: #8b8d92;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
 }
 
 @keyframes stock-db-loading {
