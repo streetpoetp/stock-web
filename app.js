@@ -1,6 +1,15 @@
 "use strict";
 
 (function () {
+  const DEFAULT_SCORE_WEIGHTS = Object.freeze({
+    contraction: 35,
+    linearity: 25,
+    consistency: 20,
+    recent_convergence: 20,
+  });
+  const WINDOW_MIN = 5;
+  const WINDOW_MAX = 60;
+
   const state = {
     session: null,
     summary: null,
@@ -10,6 +19,14 @@
     scanDate: null,
     candidates: [],
     filteredCandidates: [],
+    analysisMetadata: null,
+    analysisProfiles: [],
+    analysisWindows: [],
+    analysisWindowsByCode: new Map(),
+    analysisComplete: false,
+    scoreWeights: Object.assign({}, DEFAULT_SCORE_WEIGHTS),
+    windowMin: 5,
+    windowMax: 10,
     scoreMin: 90,
     stateFilter: "",
     exchangeFilter: "",
@@ -582,6 +599,201 @@
     return candidate;
   }
 
+  function scoreAnalysisWindow(windowRow) {
+    const weights = state.scoreWeights;
+    const score =
+      Number(windowRow.contraction) * weights.contraction +
+      Number(windowRow.linearity) * weights.linearity +
+      Number(windowRow.consistency) * weights.consistency +
+      Number(windowRow.recent_convergence) * weights.recent_convergence;
+    return Math.max(0, Math.min(100, Math.round(score * 1000000) / 1000000));
+  }
+
+  function deriveCustomCandidates() {
+    if (!state.analysisComplete) {
+      return state.scanDate ? state.session.candidates(state.scanDate) : [];
+    }
+    const derived = [];
+    state.analysisProfiles.forEach(function (profile) {
+      const windows = state.analysisWindowsByCode.get(String(profile.code)) || [];
+      let best = null;
+      windows.forEach(function (windowRow) {
+        const length = Number(windowRow.window_length);
+        if (length < state.windowMin || length > state.windowMax) return;
+        const score = scoreAnalysisWindow(windowRow);
+        if (
+          !best ||
+          score > best.score ||
+          (score === best.score && length > best.window_length)
+        ) {
+          best = Object.assign({}, windowRow, {
+            score: score,
+            window_length: length,
+          });
+        }
+      });
+      if (!best) return;
+      derived.push(Object.assign({}, profile, {
+        trade_date: state.scanDate,
+        score: best.score,
+        window_length: best.window_length,
+        contraction: Number(best.contraction),
+        linearity: Number(best.linearity),
+        consistency: Number(best.consistency),
+        recent_convergence: Number(best.recent_convergence),
+      }));
+    });
+    return derived;
+  }
+
+  function loadAnalysisForDate(tradeDate) {
+    state.analysisMetadata = tradeDate ? state.session.scanAnalysis(tradeDate) : null;
+    const coversSupportedRange = Boolean(
+      state.analysisMetadata &&
+      Number(state.analysisMetadata.min_window) <= WINDOW_MIN &&
+      Number(state.analysisMetadata.max_window) >= WINDOW_MAX
+    );
+    const profiles = coversSupportedRange
+      ? state.session.analysisProfiles(tradeDate)
+      : [];
+    const windows = coversSupportedRange
+      ? state.session.analysisWindows(tradeDate)
+      : [];
+    state.analysisComplete = Boolean(
+      coversSupportedRange &&
+      Number(state.analysisMetadata.profile_count) === profiles.length &&
+      Number(state.analysisMetadata.window_count) === windows.length
+    );
+    state.analysisProfiles = state.analysisComplete ? profiles : [];
+    state.analysisWindows = state.analysisComplete ? windows : [];
+    state.analysisWindowsByCode = new Map();
+    state.analysisWindows.forEach(function (windowRow) {
+      const code = String(windowRow.code);
+      if (!state.analysisWindowsByCode.has(code)) {
+        state.analysisWindowsByCode.set(code, []);
+      }
+      state.analysisWindowsByCode.get(code).push(windowRow);
+    });
+    state.candidates = tradeDate
+      ? deriveCustomCandidates()
+      : [];
+  }
+
+  function redistributeScoreWeight(key, requestedValue) {
+    if (!Object.prototype.hasOwnProperty.call(DEFAULT_SCORE_WEIGHTS, key)) return;
+    const value = Math.max(0, Math.min(100, Math.round(Number(requestedValue) || 0)));
+    const keys = Object.keys(DEFAULT_SCORE_WEIGHTS);
+    const otherKeys = keys.filter(function (item) { return item !== key; });
+    const remaining = 100 - value;
+    const otherTotal = otherKeys.reduce(function (total, item) {
+      return total + Number(state.scoreWeights[item]);
+    }, 0);
+    const allocations = otherKeys.map(function (item, index) {
+      const raw = otherTotal > 0
+        ? (Number(state.scoreWeights[item]) / otherTotal) * remaining
+        : remaining / otherKeys.length;
+      return {key: item, index: index, value: Math.floor(raw), fraction: raw - Math.floor(raw)};
+    });
+    let remainder = remaining - allocations.reduce(function (total, item) {
+      return total + item.value;
+    }, 0);
+    allocations
+      .slice()
+      .sort(function (left, right) {
+        return right.fraction - left.fraction || left.index - right.index;
+      })
+      .forEach(function (item) {
+        if (remainder <= 0) return;
+        const target = allocations.find(function (entry) { return entry.key === item.key; });
+        target.value += 1;
+        remainder -= 1;
+      });
+    state.scoreWeights[key] = value;
+    allocations.forEach(function (item) {
+      state.scoreWeights[item.key] = item.value;
+    });
+  }
+
+  function updateAnalysisControls() {
+    if (!root) return;
+    const controls = root.querySelector("#analysis-controls");
+    if (!controls) return;
+    controls.classList.toggle("disabled", !state.analysisComplete);
+    controls.querySelectorAll("[data-score-weight]").forEach(function (input) {
+      const key = input.dataset.scoreWeight;
+      input.value = String(state.scoreWeights[key]);
+      input.disabled = !state.analysisComplete;
+      const label = controls.querySelector('[data-score-value="' + key + '"]');
+      if (label) label.textContent = String(state.scoreWeights[key]) + "%";
+    });
+    const reset = controls.querySelector("#score-weight-reset");
+    if (reset) reset.disabled = !state.analysisComplete;
+    const minInput = controls.querySelector("#window-min");
+    const maxInput = controls.querySelector("#window-max");
+    if (minInput) {
+      minInput.value = String(state.windowMin);
+      minInput.disabled = !state.analysisComplete;
+    }
+    if (maxInput) {
+      maxInput.value = String(state.windowMax);
+      maxInput.disabled = !state.analysisComplete;
+    }
+    const rangeLabel = controls.querySelector("#window-range-label");
+    if (rangeLabel) {
+      rangeLabel.textContent = state.windowMin === state.windowMax
+        ? String(state.windowMin) + " bars"
+        : String(state.windowMin) + "–" + String(state.windowMax) + " bars";
+    }
+    const range = controls.querySelector(".stock-window-range");
+    if (range) {
+      const span = WINDOW_MAX - WINDOW_MIN;
+      const start = ((state.windowMin - WINDOW_MIN) / span) * 100;
+      const end = ((state.windowMax - WINDOW_MIN) / span) * 100;
+      range.style.setProperty("--range-start", String(start) + "%");
+      range.style.setProperty("--range-end", String(end) + "%");
+    }
+    const note = controls.querySelector("#analysis-mode-note");
+    if (note) {
+      note.textContent = state.analysisComplete
+        ? "Custom scoring"
+        : "Legacy scan — rescan to customize";
+    }
+  }
+
+  function refreshCustomCandidates() {
+    if (state.analysisComplete) {
+      state.candidates = deriveCustomCandidates();
+    }
+    updateAnalysisControls();
+    return applyCandidateFilters();
+  }
+
+  function setScoreWeight(key, value) {
+    if (!state.analysisComplete) return state.filteredCandidates.slice();
+    redistributeScoreWeight(key, value);
+    return refreshCustomCandidates();
+  }
+
+  function resetScoreWeights() {
+    state.scoreWeights = Object.assign({}, DEFAULT_SCORE_WEIGHTS);
+    return refreshCustomCandidates();
+  }
+
+  function setWindowRange(minimum, maximum, changedHandle) {
+    let nextMin = Math.max(WINDOW_MIN, Math.min(WINDOW_MAX, Math.round(Number(minimum))));
+    let nextMax = Math.max(WINDOW_MIN, Math.min(WINDOW_MAX, Math.round(Number(maximum))));
+    if (changedHandle === "min" && nextMin > nextMax) nextMin = nextMax;
+    if (changedHandle === "max" && nextMax < nextMin) nextMax = nextMin;
+    if (!changedHandle && nextMin > nextMax) {
+      const swap = nextMin;
+      nextMin = nextMax;
+      nextMax = swap;
+    }
+    state.windowMin = nextMin;
+    state.windowMax = nextMax;
+    return refreshCustomCandidates();
+  }
+
   function applyCandidateFilters() {
     const needle = state.searchText.trim().toLowerCase();
     state.filteredCandidates = state.candidates
@@ -667,6 +879,16 @@
       },
       {title: "Code", field: "code", width: 104},
       {title: "Name", field: "name", minWidth: 108},
+      {
+        title: "Window",
+        field: "window_length",
+        width: 82,
+        hozAlign: "right",
+        sorter: "number",
+        formatter: function (cell) {
+          return String(Number(cell.getValue())) + " bars";
+        },
+      },
       {title: "State", field: "state", minWidth: 120},
       {
         title: "MACD",
@@ -720,10 +942,11 @@
 
   function loadCandidateDate(tradeDate) {
     state.scanDate = tradeDate || null;
-    state.candidates = tradeDate ? state.session.candidates(tradeDate) : [];
+    loadAnalysisForDate(state.scanDate);
     const filtered = applyCandidateFilters();
     const select = root && root.querySelector("#candidate-date");
     if (select && tradeDate) select.value = tradeDate;
+    updateAnalysisControls();
     return filtered;
   }
 
@@ -735,6 +958,30 @@
       '<h2 class="stock-panel-title">Candidates</h2>',
       '<span class="stock-table-meta" id="candidate-count"></span>',
       '</header>',
+      '<div class="stock-analysis-controls" id="analysis-controls">',
+      '<div class="stock-analysis-head">',
+      '<strong>Score formula</strong>',
+      '<span class="stock-muted" id="analysis-mode-note">Custom scoring</span>',
+      '<button type="button" class="btn btn-sm btn-ghost-secondary" id="score-weight-reset">Reset</button>',
+      '</div>',
+      '<div class="stock-score-slider-grid">',
+      '<label class="stock-score-slider"><span>Contraction <b data-score-value="contraction">35%</b></span>',
+      '<input type="range" min="0" max="100" step="1" value="35" data-score-weight="contraction"></label>',
+      '<label class="stock-score-slider"><span>Linearity <b data-score-value="linearity">25%</b></span>',
+      '<input type="range" min="0" max="100" step="1" value="25" data-score-weight="linearity"></label>',
+      '<label class="stock-score-slider"><span>Consistency <b data-score-value="consistency">20%</b></span>',
+      '<input type="range" min="0" max="100" step="1" value="20" data-score-weight="consistency"></label>',
+      '<label class="stock-score-slider"><span>Recent <b data-score-value="recent_convergence">20%</b></span>',
+      '<input type="range" min="0" max="100" step="1" value="20" data-score-weight="recent_convergence"></label>',
+      '</div>',
+      '<div class="stock-window-control">',
+      '<div class="stock-window-label"><strong>Window</strong><span id="window-range-label">5–10 bars</span></div>',
+      '<div class="stock-window-scale"><span>5</span><div class="stock-window-range">',
+      '<input id="window-min" aria-label="Minimum wedge window" type="range" min="5" max="60" step="1" value="5">',
+      '<input id="window-max" aria-label="Maximum wedge window" type="range" min="5" max="60" step="1" value="10">',
+      '</div><span>60</span></div>',
+      '</div>',
+      '</div>',
       '<div class="stock-filter-row">',
       '<label>Score ≥ <span class="stock-score-presets">',
       '<button type="button" data-score-min="60">60</button>',
@@ -773,6 +1020,20 @@
         setCandidateFilters({scoreMin: Number(button.dataset.scoreMin)});
       });
     });
+    root.querySelectorAll("[data-score-weight]").forEach(function (input) {
+      input.addEventListener("input", function () {
+        setScoreWeight(input.dataset.scoreWeight, Number(input.value));
+      });
+    });
+    root.querySelector("#score-weight-reset").addEventListener("click", function () {
+      resetScoreWeights();
+    });
+    root.querySelector("#window-min").addEventListener("input", function (event) {
+      setWindowRange(Number(event.target.value), state.windowMax, "min");
+    });
+    root.querySelector("#window-max").addEventListener("input", function (event) {
+      setWindowRange(state.windowMin, Number(event.target.value), "max");
+    });
     root.querySelector("#candidate-date").addEventListener("change", function (event) {
       loadCandidateDate(event.target.value);
     });
@@ -793,6 +1054,7 @@
       exchange: state.exchangeFilter,
       search: state.searchText,
     });
+    updateAnalysisControls();
     buildCandidateTable();
     setTimeout(function () {
       if (state.view === "candidates") {
@@ -1076,7 +1338,10 @@
     state.summary = session.summary();
     state.scanDates = session.scanDates();
     state.scanDate = state.scanDates.length ? state.scanDates[0].trade_date : null;
-    state.candidates = state.scanDate ? session.candidates(state.scanDate) : [];
+    state.scoreWeights = Object.assign({}, DEFAULT_SCORE_WEIGHTS);
+    state.windowMin = 5;
+    state.windowMax = 10;
+    loadAnalysisForDate(state.scanDate);
     state.selectedCode = null;
     state.selectedCandidate = null;
     state.selectedSecurity = null;
@@ -1128,6 +1393,9 @@
     openDatabaseFile: openDatabaseFile,
     setView: setView,
     setCandidateFilters: setCandidateFilters,
+    setScoreWeight: setScoreWeight,
+    resetScoreWeights: resetScoreWeights,
+    setWindowRange: setWindowRange,
     loadCandidateDate: loadCandidateDate,
     searchStocks: searchStocks,
     selectStock: selectStock,

@@ -1,7 +1,7 @@
 "use strict";
 
 (function () {
-  const EXPECTED_SCHEMA_VERSION = 1;
+  const EXPECTED_SCHEMA_VERSION = 2;
   const REQUIRED_COLUMNS = {
     schema_meta: ["version"],
     securities: ["code", "name", "exchange", "status"],
@@ -17,6 +17,17 @@
       "trade_date", "code", "name", "exchange", "state", "score", "close",
       "dif", "dea", "histogram", "previous_histogram", "window_length",
       "contraction", "linearity", "consistency", "recent_convergence",
+    ],
+    scan_analysis: [
+      "trade_date", "min_window", "max_window", "profile_count", "window_count",
+    ],
+    analysis_profiles: [
+      "trade_date", "code", "name", "exchange", "state", "close", "dif", "dea",
+      "histogram", "previous_histogram",
+    ],
+    analysis_windows: [
+      "trade_date", "code", "window_length", "contraction", "linearity",
+      "consistency", "recent_convergence",
     ],
   };
 
@@ -167,6 +178,34 @@
           "SELECT * FROM candidates WHERE trade_date=? AND code=? LIMIT 1",
           [tradeDate, code],
         )[0] || null;
+      },
+
+      scanAnalysis(tradeDate) {
+        assertOpen();
+        return rows(
+          db,
+          "SELECT * FROM scan_analysis WHERE trade_date=? LIMIT 1",
+          [tradeDate],
+        )[0] || null;
+      },
+
+      analysisProfiles(tradeDate) {
+        assertOpen();
+        return rows(
+          db,
+          "SELECT * FROM analysis_profiles WHERE trade_date=? ORDER BY code",
+          [tradeDate],
+        );
+      },
+
+      analysisWindows(tradeDate) {
+        assertOpen();
+        return rows(
+          db,
+          "SELECT * FROM analysis_windows WHERE trade_date=? " +
+          "ORDER BY code, window_length",
+          [tradeDate],
+        );
       },
 
       securities(searchText, limit) {
